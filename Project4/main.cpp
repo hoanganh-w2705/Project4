@@ -42,7 +42,9 @@ VOID DriverUnload(
 	
 	
 	FltUnregisterFilter(MinifilterData.Filter);
-
+	ExFreePoolWithTag(globalLogQueueHead, 'LnLg');
+	ExFreePoolWithTag(globalLogBuffer, 'LogB');
+	ExFreePoolWithTag(globalOutputBuffer, 'tuOg');
 	UNICODE_STRING symlink = RTL_CONSTANT_STRING(EXTERNAL_DEVICE_MONITOR_DEVICE_SYMLINK);
 	IoDeleteSymbolicLink(&symlink);
 	IoDeleteDevice(pDriverObject->DeviceObject);
@@ -64,13 +66,13 @@ NTSTATUS DriverControl(
 
 	PIO_STACK_LOCATION pIoStack = IoGetCurrentIrpStackLocation(pIrp);
 	NTSTATUS status = STATUS_INVALID_DEVICE_REQUEST;
-
+	SIZE_T information = 0;
 	// Xử lý IOCTL_SET_PATH_STRING
 	if (pIoStack->Parameters.DeviceIoControl.IoControlCode == IOCTL_SET_PATH_STRING) {
 		PVOID inputBuffer = pIrp->AssociatedIrp.SystemBuffer;
 		ULONG inputBufferLength = pIoStack->Parameters.DeviceIoControl.InputBufferLength;
 
-		startSaveLog = TRUE;
+
 
 		if (inputBuffer != NULL && inputBufferLength > 0 && inputBufferLength <= 100) {
 			globalOutputBuffer = (char*)ExAllocatePool2(POOL_FLAG_NON_PAGED, inputBufferLength, 'tuOg');
@@ -81,14 +83,16 @@ NTSTATUS DriverControl(
 	}
 	// Xử lý IOCTL_GET_GLOBAL_LOG
 	else if (pIoStack->Parameters.DeviceIoControl.IoControlCode == IOCTL_GET_GLOBAL_LOG) {
+		//PVOID inputBuffer = pIrp->AssociatedIrp.SystemBuffer;
 		PVOID outputBuffer = pIrp->AssociatedIrp.SystemBuffer;
 		ULONG outputBufferLength = pIoStack->Parameters.DeviceIoControl.OutputBufferLength;
-
-		if (outputBuffer != NULL && outputBufferLength >= sizeof(WCHAR*)) {
+		startSaveLog = TRUE;
+		if (outputBuffer != NULL && outputBufferLength >= sizeof(WCHAR)) {
 			WCHAR* logBuffer = DequeueLogBuffer();
 
 			if (logBuffer != NULL) {
 				RtlCopyMemory(outputBuffer, logBuffer, wcslen(logBuffer) * sizeof(WCHAR));
+				information = wcslen(logBuffer) * sizeof(WCHAR);
 				DbgPrint("Global Log Buffer: %ws\n", logBuffer);
 				//ExFreePoolWithTag(logBuffer, 'GlLg');
 				
@@ -107,16 +111,14 @@ NTSTATUS DriverControl(
 		startSaveLog = FALSE;
 		blockWrite = FALSE;
 		blockDelete = FALSE;
-		ExFreePoolWithTag(globalLogQueueHead, 'LnLg');
-		ExFreePoolWithTag(globalLogBuffer, 'LogB');
-		ExFreePoolWithTag(globalOutputBuffer, 'tuOg');
+		
+
 	}
 
 	else if (pIoStack->Parameters.DeviceIoControl.IoControlCode == IOCTL_BLOCK_WRITE) {
 		PVOID outputBuffer = pIrp->AssociatedIrp.SystemBuffer;
 		ULONG outputBufferLength = pIoStack->Parameters.DeviceIoControl.OutputBufferLength;
 
-		startSaveLog = TRUE;
 		blockWrite = TRUE;
 
 		if (outputBuffer != NULL && outputBufferLength >= sizeof(WCHAR*)) {
@@ -124,6 +126,7 @@ NTSTATUS DriverControl(
 
 			if (logBuffer != NULL) {
 				RtlCopyMemory(outputBuffer, logBuffer, wcslen(logBuffer) * sizeof(WCHAR));
+				information = wcslen(logBuffer) * sizeof(WCHAR);
 				DbgPrint("Global Log Buffer: %ws\n", logBuffer);
 
 				status = STATUS_SUCCESS;
@@ -140,7 +143,6 @@ NTSTATUS DriverControl(
 		PVOID outputBuffer = pIrp->AssociatedIrp.SystemBuffer;
 		ULONG outputBufferLength = pIoStack->Parameters.DeviceIoControl.OutputBufferLength;
 
-		startSaveLog = TRUE;
 		blockDelete = TRUE;
 
 		if (outputBuffer != NULL && outputBufferLength >= sizeof(WCHAR*)) {
@@ -148,6 +150,7 @@ NTSTATUS DriverControl(
 
 			if (logBuffer != NULL) {
 				RtlCopyMemory(outputBuffer, logBuffer, wcslen(logBuffer) * sizeof(WCHAR));
+				information = wcslen(logBuffer) * sizeof(WCHAR);
 				DbgPrint("Global Log Buffer: %ws\n", logBuffer);
 
 				status = STATUS_SUCCESS;
@@ -166,7 +169,7 @@ NTSTATUS DriverControl(
 
 	//ExFreePoolWithTag(globalLogQueueHead, 'LnLg');
 	//ExFreePoolWithTag(globalLogBuffer, 'LogB');
-	return CompleteRequest(pIrp, status, 0);
+	return CompleteRequest(pIrp, status, information); //information: size  mà user đọc được (ban đầu để 0 -> lỗi)
 }
 
 extern "C"

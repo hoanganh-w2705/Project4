@@ -5,10 +5,10 @@
 UNICODE_STRING BootVolumePrefix = RTL_CONSTANT_STRING(BOOT_VOLUME_NT_PATH);
 WCHAR* globalLogBuffer;
 LOG_BUFFER_ENTRY* globalLogQueueHead;
-KSPIN_LOCK queueLock;
+KMUTEX queueMutex;
 
 void InitializeLogQueue() {
-	KeInitializeSpinLock(&queueLock);
+	KeInitializeMutex(&queueMutex, 0); // Initialize the mutex
 	globalLogQueueHead = (LOG_BUFFER_ENTRY*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(LOG_BUFFER_ENTRY), 'LnLg');
 }
 
@@ -18,34 +18,35 @@ void EnqueueLogBuffer(WCHAR* logBuffer) {
 		newEntry->logBuffer = logBuffer;
 		newEntry->next = NULL;
 
-		// Lock the queue to ensure thread safety
-		KIRQL oldIrql;
-		KeAcquireSpinLock(&queueLock, &oldIrql);
+		// Acquire the mutex to ensure thread safety
+		KeWaitForSingleObject(&queueMutex, Executive, KernelMode, FALSE, NULL);
+
 		LOG_BUFFER_ENTRY* p = globalLogQueueHead;
 		while (p->next != NULL)
 			p = p->next;
 		p->next = newEntry;
-		KeReleaseSpinLock(&queueLock, oldIrql);
+
+		// Release the mutex
+		KeReleaseMutex(&queueMutex, FALSE);
 	}
 }
 
 WCHAR* DequeueLogBuffer() {
 	WCHAR* logBuffer = NULL;
 
-	KIRQL oldIrql;
-	KeAcquireSpinLock(&queueLock, &oldIrql);
+	// Acquire the mutex to ensure thread safety
+	KeWaitForSingleObject(&queueMutex, Executive, KernelMode, FALSE, NULL);
 
 	if (globalLogQueueHead != NULL) {
 		LOG_BUFFER_ENTRY* entryToRemove = globalLogQueueHead;
 		logBuffer = entryToRemove->logBuffer;
 		globalLogQueueHead = globalLogQueueHead->next;
 
-
-
-		//ExFreePoolWithTag(entryToRemove, 'LnLg');
+		ExFreePoolWithTag(entryToRemove, 'LnLg'); // Free the removed entry
 	}
 
-	KeReleaseSpinLock(&queueLock, oldIrql);
+	// Release the mutex
+	KeReleaseMutex(&queueMutex, FALSE);
 
 	return logBuffer;
 }
@@ -90,19 +91,16 @@ FLT_PREOP_CALLBACK_STATUS CreatePreoperationCallback(
 	
 		PFLT_FILE_NAME_INFORMATION fileNameInfo = NULL;
 		NTSTATUS status;
-		status = FltGetFileNameInformation(data, FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_ALWAYS_ALLOW_CACHE_LOOKUP, &fileNameInfo);
+		status = FltGetFileNameInformation(data, FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT, &fileNameInfo);
 		if (NT_SUCCESS(status)) {
 			if (fileNameInfo != NULL) {
 				FltParseFileNameInformation(fileNameInfo);
 				UNICODE_STRING string = { 0 };
 				if (globalOutputBuffer != NULL && globalOutputBuffer[0] != L'\0') {
 					RtlInitUnicodeString(&string, (PCWSTR)globalOutputBuffer);// Khởi tạo UNICODE_STRING từ buffer
-					//DbgPrint("RtlInitUnicodeString success!\n");
 				}
 
-				// Kiểm tra nếu Buffer không phải NULL và độ dài lớn hơn 0
 				if (string.Buffer != NULL && string.Length > 0) {
-					//DbgPrint("String content: %wZ\n", &string.Buffer);
 					LONG check = RtlCompareUnicodeString(&string, &fileNameInfo->ParentDir, TRUE); //check path 
 					if (check == 0) {
 
