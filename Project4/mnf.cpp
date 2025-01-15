@@ -1,6 +1,5 @@
-﻿#include "common.h"
+﻿//#include "common.h"
 #include "mnf.h"
-
 
 UNICODE_STRING BootVolumePrefix = RTL_CONSTANT_STRING(BOOT_VOLUME_NT_PATH);
 WCHAR* globalLogBuffer;
@@ -9,7 +8,7 @@ KMUTEX queueMutex;
 
 void InitializeLogQueue() {
 	KeInitializeMutex(&queueMutex, 0); // Initialize the mutex
-	globalLogQueueHead = (LOG_BUFFER_ENTRY*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(LOG_BUFFER_ENTRY), 'LnLg');
+	globalLogQueueHead = (LOG_BUFFER_ENTRY*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(LOG_BUFFER_ENTRY), 'LnHg');
 }
 
 void EnqueueLogBuffer(WCHAR* logBuffer) {
@@ -21,10 +20,15 @@ void EnqueueLogBuffer(WCHAR* logBuffer) {
 		// Acquire the mutex to ensure thread safety
 		KeWaitForSingleObject(&queueMutex, Executive, KernelMode, FALSE, NULL);
 
-		LOG_BUFFER_ENTRY* p = globalLogQueueHead;
-		while (p->next != NULL)
-			p = p->next;
-		p->next = newEntry;
+		if (globalLogQueueHead == NULL) {
+			globalLogQueueHead = newEntry;
+		}
+		else {
+			LOG_BUFFER_ENTRY* p = globalLogQueueHead;
+			while (p->next != NULL)
+				p = p->next;
+			p->next = newEntry;
+		}
 
 		// Release the mutex
 		KeReleaseMutex(&queueMutex, FALSE);
@@ -41,19 +45,17 @@ WCHAR* DequeueLogBuffer() {
 		LOG_BUFFER_ENTRY* entryToRemove = globalLogQueueHead;
 		logBuffer = entryToRemove->logBuffer;
 		globalLogQueueHead = globalLogQueueHead->next;
-
-		ExFreePoolWithTag(entryToRemove, 'LnLg'); // Free the removed entry
 	}
 
-	// Release the mutex
+	//DbgPrint("Before Release: globalLogQueueHead = %p\n", globalLogQueueHead);
 	KeReleaseMutex(&queueMutex, FALSE);
+	//DbgPrint("After Release: globalLogQueueHead = %p\n", globalLogQueueHead);
 
 	return logBuffer;
 }
 
 void LogToGlobalBuffer(
-	PUNICODE_STRING parentDir,
-	PUNICODE_STRING extension,
+	PUNICODE_STRING Name,
 	SIZE_T sizeBuffer,
 	PCWSTR logPrefix // Thêm tham số logPrefix
 ) {
@@ -63,15 +65,14 @@ void LogToGlobalBuffer(
 		NTSTATUS status = RtlStringCbPrintfW(
 			logBuffer,
 			sizeBuffer,
-			L"%wS %wZ%wZ\n",
+			L"%wS%wZ\n",
 			logPrefix,
-			parentDir,
-			extension
+			Name
 		);
 
 		if (NT_SUCCESS(status)) {
 			EnqueueLogBuffer(logBuffer); // Thêm logBuffer vào hàng đợi
-			
+
 		}
 		else {
 			DbgPrint("RtlStringCbPrintfW failed with status: 0x%X\n", status);
@@ -88,52 +89,40 @@ FLT_PREOP_CALLBACK_STATUS CreatePreoperationCallback(
 ) {
 	UNREFERENCED_PARAMETER(completionContext);
 	UNREFERENCED_PARAMETER(fltObjects);
-	
-		PFLT_FILE_NAME_INFORMATION fileNameInfo = NULL;
-		NTSTATUS status;
-		status = FltGetFileNameInformation(data, FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT, &fileNameInfo);
-		if (NT_SUCCESS(status)) {
-			if (fileNameInfo != NULL) {
-				FltParseFileNameInformation(fileNameInfo);
-				UNICODE_STRING string = { 0 };
-				if (globalOutputBuffer != NULL && globalOutputBuffer[0] != L'\0') {
-					RtlInitUnicodeString(&string, (PCWSTR)globalOutputBuffer);// Khởi tạo UNICODE_STRING từ buffer
-				}
 
-				if (string.Buffer != NULL && string.Length > 0) {
-					LONG check = RtlCompareUnicodeString(&string, &fileNameInfo->ParentDir, TRUE); //check path 
-					if (check == 0) {
+	PFLT_FILE_NAME_INFORMATION fileNameInfo = NULL;
+	NTSTATUS status;
+	status = FltGetFileNameInformation(data, FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT, &fileNameInfo);
+	if (NT_SUCCESS(status)) {
+		if (fileNameInfo != NULL) {
+			FltParseFileNameInformation(fileNameInfo);
+			UNICODE_STRING string = { 0 };
+			if (globalOutputBuffer != NULL && globalOutputBuffer[0] != L'\0') {
+				RtlInitUnicodeString(&string, (PCWSTR)globalOutputBuffer);// Khởi tạo UNICODE_STRING từ buffer
+			}
 
-						if (startSaveLog) {
-							DbgPrint("Callback =======[LOG][Create] A file is being created in a directory containing ...: %wZ%wZ\n", &fileNameInfo->ParentDir, &fileNameInfo->Extension);
-							SIZE_T bufferSize = fileNameInfo->ParentDir.Length + fileNameInfo->Extension.Length + sizeof(L"=======[LOG][Create] A file is being created in directory: %wZ%wZ\n");
+			if (string.Buffer != NULL && string.Length > 0) {
+				LONG check = RtlCompareUnicodeString(&string, &fileNameInfo->ParentDir, TRUE); //check path 
+				if (check == 0) {
 
-							//lưu vào global
-							LogToGlobalBuffer(&fileNameInfo->ParentDir, &fileNameInfo->Extension, bufferSize, L"=======[LOG][Create] A file is being created in directory:");
-						}
+					if (startSaveLog) {
+						DbgPrint("Callback =======[LOG][Create] A file is being created in a directory containing ...: %wZ%wZ\n", &fileNameInfo->ParentDir, &fileNameInfo->Extension);
+						SIZE_T bufferSize = fileNameInfo->Name.Length + sizeof(L"[Create]%wZ\n");
 
-						if (blockWrite) {
-							DbgPrint("Callback =======[BLOCK][WRITE] Block a write action in directory containing ...: %wZ%wZ\n", &fileNameInfo->ParentDir, &fileNameInfo->Extension);
-							SIZE_T bufferSize = fileNameInfo->ParentDir.Length + fileNameInfo->Extension.Length + sizeof(L"=======[BLOCK][WRITE] Block a write action in directory: %wZ%wZ\n");
-
-							//lưu vào global
-							LogToGlobalBuffer(&fileNameInfo->ParentDir, &fileNameInfo->Extension, bufferSize, L"=======[BLOCK][WRITE] Block a write action in directory:");
-							data->IoStatus.Status = STATUS_ACCESS_DENIED; // Gán trạng thái cho IRP
-							data->IoStatus.Information = 0;  // Không có thông tin trả lại
-
-						}
+						//lưu vào global
+						LogToGlobalBuffer(&fileNameInfo->Name, bufferSize, L"[Create]");
 					}
 				}
 			}
-			FltReleaseFileNameInformation(fileNameInfo);
 		}
-		
+		FltReleaseFileNameInformation(fileNameInfo);
+	}
+
 	else {
 		UNREFERENCED_PARAMETER(data);
-		return FLT_PREOP_SUCCESS_NO_CALLBACK;
 	}
 	return FLT_PREOP_SUCCESS_NO_CALLBACK;
-	
+
 }
 
 FLT_PREOP_CALLBACK_STATUS ReadPreoperationCallback(
@@ -163,12 +152,12 @@ FLT_PREOP_CALLBACK_STATUS ReadPreoperationCallback(
 				if (check == 0) {
 					if (startSaveLog) {
 						DbgPrint("Callback =======[LOG][Read] A file is being read in a directory containing ...: %wZ%wZ\n", &fileNameInfo->ParentDir, &fileNameInfo->Extension);
-						SIZE_T bufferSize = fileNameInfo->ParentDir.Length + fileNameInfo->Extension.Length + sizeof(L"=======[LOG][Read] A file is being read in directory: %wZ%wZ\n");
+						SIZE_T bufferSize = fileNameInfo->Name.Length + sizeof(L"[Read]%wZ\n");
 
 						//lưu vào global
-						LogToGlobalBuffer(&fileNameInfo->ParentDir, &fileNameInfo->Extension, bufferSize, L"=======[LOG][Read] A file is being read in directory:");
+						LogToGlobalBuffer(&fileNameInfo->Name, bufferSize, L"[Read]");
 					}
-					
+
 				}
 			}
 			FltReleaseFileNameInformation(fileNameInfo);
@@ -209,22 +198,22 @@ FLT_PREOP_CALLBACK_STATUS WritePreoperationCallback(
 				if (check == 0) {
 					if (startSaveLog) {
 						DbgPrint("Callback =======[LOG][Write] A file is being writen in a directory containing ...: %wZ%wZ\n", &fileNameInfo->ParentDir, &fileNameInfo->Extension);
-						SIZE_T bufferSize = fileNameInfo->ParentDir.Length + fileNameInfo->Extension.Length + sizeof(L"=======[LOG][Write] A file is being writen in directory: %wZ%wZ\n");
+						SIZE_T bufferSize = fileNameInfo->Name.Length + sizeof(L"[Write]%wZ\n");
 
 						//lưu vào global
-						LogToGlobalBuffer(&fileNameInfo->ParentDir, &fileNameInfo->Extension, bufferSize, L"=======[LOG][Write] A file is being writen in directory:");
+						LogToGlobalBuffer(&fileNameInfo->Name, bufferSize, L"[Write]");
 					}
 					if (blockWrite) {
 						DbgPrint("Callback =======[BLOCK][WRITE] Block a write action in directory containing ...: %wZ%wZ\n", &fileNameInfo->ParentDir, &fileNameInfo->Extension);
-						SIZE_T bufferSize = fileNameInfo->ParentDir.Length + fileNameInfo->Extension.Length + sizeof(L"=======[BLOCK][WRITE] Block a write action in directory: %wZ%wZ\n");
+						SIZE_T bufferSize = fileNameInfo->Name.Length + sizeof(L"[BLOCK]%wZ\n");
 
 						//lưu vào global
-						LogToGlobalBuffer(&fileNameInfo->ParentDir, &fileNameInfo->Extension, bufferSize, L"=======[BLOCK][WRITE] Block a write action in directory:");
+						LogToGlobalBuffer(&fileNameInfo->Name, bufferSize, L"[BLOCK]");
 						data->IoStatus.Status = STATUS_ACCESS_DENIED; // Gán trạng thái cho IRP
 						data->IoStatus.Information = 0;  // Không có thông tin trả lại
 						return FLT_PREOP_COMPLETE;
 					}
-					
+
 				}
 			}
 			FltReleaseFileNameInformation(fileNameInfo);
@@ -273,26 +262,27 @@ FLT_PREOP_CALLBACK_STATUS SetInformationPreoperationCallback(
 					if (check == 0) {
 						if (startSaveLog) {
 							DbgPrint("Callback =======[LOG][Delete] A file is being deleted in a directory containing ...: %wZ%wZ\n", &fileNameInfo->ParentDir, &fileNameInfo->Extension);
-							SIZE_T bufferSize = fileNameInfo->ParentDir.Length + fileNameInfo->Extension.Length + sizeof(L"=======[LOG][Delete] A file is being deleted in directory: %wZ%wZ\n");
+							SIZE_T bufferSize = fileNameInfo->Name.Length + sizeof(L"[Delete]%wZ\n");
 
 							//lưu vào global
-							LogToGlobalBuffer(&fileNameInfo->ParentDir, &fileNameInfo->Extension, bufferSize, L"=======[LOG][Delete] A file is being deleted in directory:");
+							LogToGlobalBuffer(&fileNameInfo->Name, bufferSize, L"[Delete]");
 						}
 						if (blockDelete) {
-							DbgPrint("Callback =======[BLOCK][WRITE] Block a write action in directory containing ...: %wZ%wZ\n", &fileNameInfo->ParentDir, &fileNameInfo->Extension);
-							SIZE_T bufferSize = fileNameInfo->ParentDir.Length + fileNameInfo->Extension.Length + sizeof(L"=======[BLOCK][WRITE] Block a write action in directory: %wZ%wZ\n");
+							DbgPrint("Callback =======[BLOCK][Delete] Block a deleted action in directory containing ...: %wZ%wZ\n", &fileNameInfo->ParentDir, &fileNameInfo->Extension);
+							SIZE_T bufferSize = fileNameInfo->Name.Length + sizeof(L"[BLOCK]%wZ\n");
 
 							//lưu vào global
-							LogToGlobalBuffer(&fileNameInfo->ParentDir, &fileNameInfo->Extension, bufferSize, L"=======[BLOCK][WRITE] Block a write action in directory:");
+							LogToGlobalBuffer(&fileNameInfo->Name, bufferSize, L"[BLOCK]");
 							data->IoStatus.Status = STATUS_ACCESS_DENIED; // Gán trạng thái cho IRP
 							data->IoStatus.Information = 0;  // Không có thông tin trả lại
 							return FLT_PREOP_COMPLETE;
 						}
-						
+
 					}
 				}
 				FltReleaseFileNameInformation(fileNameInfo);
 			}
+
 		}
 	}
 	else {
@@ -328,17 +318,11 @@ NTSTATUS InstanceSetupCallback(
 		if (!NT_SUCCESS(status)) {
 			return STATUS_FLT_DO_NOT_ATTACH;
 		}
-		if (RtlCompareUnicodeString(&volumeName, &BootVolumePrefix, TRUE) == 0) {
-			// todo: in the future, there will be excluded cases (e.g don't monitor C:\ but C:\ProgramData)
-			// handle them here
-			ExFreePoolWithTag(volumeName.Buffer, 'mNlV');
+		else {
 			return STATUS_SUCCESS;
 		}
-
-		else {
-			return STATUS_FLT_DO_NOT_ATTACH;
-		}
 		
+
 
 	}
 

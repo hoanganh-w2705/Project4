@@ -1,4 +1,4 @@
-﻿#include "common.h"
+﻿//﻿#include "common.h"
 #include "mnf.h"
 
 char* globalOutputBuffer;
@@ -39,12 +39,12 @@ NTSTATUS DriverRead(
 VOID DriverUnload(
 	PDRIVER_OBJECT pDriverObject
 ) {
-	
-	
+
+
 	FltUnregisterFilter(MinifilterData.Filter);
-	ExFreePoolWithTag(globalLogQueueHead, 'LnLg');
+	/*ExFreePoolWithTag(globalLogQueueHead, 'LnLg');
 	ExFreePoolWithTag(globalLogBuffer, 'LogB');
-	ExFreePoolWithTag(globalOutputBuffer, 'tuOg');
+	ExFreePoolWithTag(globalOutputBuffer, 'tuOg');*/
 	UNICODE_STRING symlink = RTL_CONSTANT_STRING(EXTERNAL_DEVICE_MONITOR_DEVICE_SYMLINK);
 	IoDeleteSymbolicLink(&symlink);
 	IoDeleteDevice(pDriverObject->DeviceObject);
@@ -71,7 +71,7 @@ NTSTATUS DriverControl(
 	if (pIoStack->Parameters.DeviceIoControl.IoControlCode == IOCTL_SET_PATH_STRING) {
 		PVOID inputBuffer = pIrp->AssociatedIrp.SystemBuffer;
 		ULONG inputBufferLength = pIoStack->Parameters.DeviceIoControl.InputBufferLength;
-
+		startSaveLog = TRUE;
 
 
 		if (inputBuffer != NULL && inputBufferLength > 0 && inputBufferLength <= 100) {
@@ -86,7 +86,7 @@ NTSTATUS DriverControl(
 		//PVOID inputBuffer = pIrp->AssociatedIrp.SystemBuffer;
 		PVOID outputBuffer = pIrp->AssociatedIrp.SystemBuffer;
 		ULONG outputBufferLength = pIoStack->Parameters.DeviceIoControl.OutputBufferLength;
-		startSaveLog = TRUE;
+
 		if (outputBuffer != NULL && outputBufferLength >= sizeof(WCHAR)) {
 			WCHAR* logBuffer = DequeueLogBuffer();
 
@@ -95,7 +95,7 @@ NTSTATUS DriverControl(
 				information = wcslen(logBuffer) * sizeof(WCHAR);
 				DbgPrint("Global Log Buffer: %ws\n", logBuffer);
 				//ExFreePoolWithTag(logBuffer, 'GlLg');
-				
+
 				status = STATUS_SUCCESS;
 			}
 			else {
@@ -111,7 +111,7 @@ NTSTATUS DriverControl(
 		startSaveLog = FALSE;
 		blockWrite = FALSE;
 		blockDelete = FALSE;
-		
+
 
 	}
 
@@ -165,7 +165,7 @@ NTSTATUS DriverControl(
 	}
 
 
-	
+
 
 	//ExFreePoolWithTag(globalLogQueueHead, 'LnLg');
 	//ExFreePoolWithTag(globalLogBuffer, 'LogB');
